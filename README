@@ -1,0 +1,20 @@
+cluster
+
+This is the cluster module.
+
+- it uses corosync and pacemaker
+- it loads the cluster config on one of the node only and let crm to spread it over the cluster
+- it uses some variables that you can define on puppetdashboard, the foreman or the node.pp:
+
+cluster_mcastaddr, cluster_bind_interface
+
+example:
+
+cluster_mcastaddr       226.94.1.1
+cluster_bind_interface  eth0
+
+Note:
+
+this package contains cyrus-ms ocf: a cyrus multi-master ocf
+
+Any question or feedback can be sent to lefred.descamps@gmail.com

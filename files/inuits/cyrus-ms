@@ -1,0 +1,252 @@
+#!/bin/sh
+#
+#
+#   stateful OCF Resource Agent for cyrus-imapd 
+#
+# Copyright (c) 2011 Frederic Descamps
+# based on Andrew Beekhof's stateful example
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of version 2 of the GNU General Public License as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it would be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#
+# Further, this software is distributed without any warranty that it is
+# free of the rightful claim of any third person regarding infringement
+# or the like.  Any license provided herein, whether implied or
+# otherwise, applies only to this software file.  Patent licenses, if
+# any, provided herein do not apply to combinations of this program with
+# other software, or any other product whatsoever.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write the Free Software Foundation,
+# Inc., 59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
+#
+
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/resource.d/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/.ocf-shellfuncs
+CRM_MASTER="${HA_SBIN_DIR}/crm_master -l reboot"
+
+MD5_SUM="/usr/bin/md5sum"
+CYRUS_PROC="/usr/lib/cyrus-imapd/cyrus-master"
+DEFAULT_CYRUS_PID="/var/run/cyrus-master.pid"
+
+#######################################################################
+
+meta_data() {
+    cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="cyrus-ms" version="1.0">
+<version>1.0</version>
+
+<longdesc lang="en">
+This is an agent for cyrus-imapd with 2 states
+</longdesc>
+<shortdesc lang="en">cyrus stateful resource agent</shortdesc>
+
+<parameters>
+
+<parameter name="cyrusconfig" unique="1">
+<longdesc lang="en">
+Path to the configfile. The master and slave files are assumed as [config]-master and [config]-slave
+</longdesc>
+<shortdesc lang="en">
+Path to cyrus.conf
+</shortdesc>
+<content type="string" default="/etc/cyrus.conf" />
+</parameter>
+
+<parameter name="imapconfig" unique="1">
+<longdesc lang="en">
+Path to the configfile. The master and slave files are assumed as [config]-master and [config]-slave
+</longdesc>
+<shortdesc lang="en">
+Path to imapd.conf
+</shortdesc>
+<content type="string" default="/etc/imapd.conf" />
+</parameter>
+
+<parameter name="lsb_script" unique="1">
+<longdesc lang="en">
+Path to lsb start stript.. normally /etc/init.d/cyrus-imapd
+</longdesc>
+<shortdesc lang="en">
+Path to lsb start stript
+</shortdesc>
+<content type="string" default="/etc/init.d/cyrus-imapd" />
+</parameter>
+
+</parameters>
+
+<actions>
+<action name="start"   timeout="20s" />
+<action name="stop"    timeout="20s" />
+<action name="monitor" depth="0"  timeout="20" interval="10"/>
+<action name="meta-data"  timeout="5" />
+<action name="validate-all"  timeout="20s" />
+</actions>
+</resource-agent>
+END
+    exit $OCF_SUCCESS
+}
+
+#######################################################################
+
+cyrus_ms_log() {
+    msg=$1
+    ocf_log err "CYRUS-MSG[$RESOURCE]: $msg"
+}
+
+cyrus_ms_usage() {
+    cat <<END
+usage: $0 {start|stop|promote|demote|monitor|validate-all|meta-data}
+
+Expects to have a fully populated OCF RA-compliant environment set.
+END
+    exit $1
+}
+
+cyrus_ms_update() {
+    target=$1
+    cyrus_ms_log " Set new state: $target"
+    if [ "X$target" == "Xmaster" ]; then
+        cp "${OCF_RESKEY_cyrusconfig}-master" "${OCF_RESKEY_cyrusconfig}"
+        cp "${OCF_RESKEY_imapconfig}-master" "${OCF_RESKEY_imapconfig}"
+    else
+        cp "${OCF_RESKEY_cyrusconfig}-slave" "${OCF_RESKEY_cyrusconfig}"
+        cp "${OCF_RESKEY_imapconfig}-slave" "${OCF_RESKEY_imapconfig}"
+    fi
+    cyrus_ms_log " Restart server"
+    ${OCF_RESKEY_lsb_script} restart
+}
+
+cyrus_ms_check_state() {
+    target=$1
+    
+    md5_current=`$MD5_SUM "$OCF_RESKEY_cyrusconfig" | sed 's%\([a-f0-9]*\).*%\1%'`
+    md5_master=`$MD5_SUM "$OCF_RESKEY_cyrusconfig-master" | sed 's%\([a-f0-9]*\).*%\1%'`
+    md5_slave=`$MD5_SUM "$OCF_RESKEY_cyrusconfig-slave" | sed 's%\([a-f0-9]*\).*%\1%'`
+    cyrus_ms_log "COMPARE CUR $md5_current, MASTER $md5_master, SLAVE $md5_slave"
+    
+    # check wheter we are master
+    if [ "X$target" == "Xmaster" ]; then
+        if [ "X$md5_current" != "X$md5_master" ]; then
+            cyrus_ms_log " check is master -> is not"
+            return 1
+        else
+            return 0
+        fi
+    # check wheter we are slave
+    elif [ "X$target" == "Xslave" ]; then
+        cyrus_ms_log " check is slave... "
+        if [ "X$md5_current" != "X$md5_slave" ]; then
+            cyrus_ms_log " check is slave -> is not"
+            return 1
+        else
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+cyrus_ms_start() {
+    cyrus_ms_check_state master
+    if [ $? = 0 ]; then
+        # CRM Error - Should never happen
+    return $OCF_RUNNING_MASTER
+    fi
+    cyrus_ms_update slave
+    $CRM_MASTER -v 5
+    return 0
+}
+
+cyrus_ms_demote() {
+    cyrus_ms_check_state 
+    if [ $? = 0 ]; then
+        # CRM Error - Should never happen
+    return $OCF_NOT_RUNNING
+    fi
+    cyrus_ms_update slave
+    $CRM_MASTER -v 5
+    return 0
+}
+
+cyrus_ms_promote() {
+    cyrus_ms_check_state 
+    if [ $? = 0 ]; then
+    return $OCF_NOT_RUNNING
+    fi
+    cyrus_ms_update master
+    $CRM_MASTER -v 10
+    return 0
+}
+
+cyrus_ms_stop() {
+    $CRM_MASTER -D
+    cyrus_ms_check_state master
+    if [ $? = 0 ]; then
+        # CRM Error - Should never happen
+    return $OCF_RUNNING_MASTER
+    fi
+    # stop cyrus-imapd 
+    cyrus_ms_log " Stop server"
+    ${OCF_RESKEY_lsb_script} stop
+    return 0
+}
+
+cyrus_ms_check_running() {
+    ps ax | grep  $CYRUS_PROC | grep -v grep >/dev/null 2>&1
+    if [ $? = 0 ]; then
+        return 0 
+    else
+        return 7
+    fi
+}
+
+cyrus_ms_monitor() {
+    cyrus_ms_check_running
+    retval=$?
+    cyrus_ms_log " check if running returned $retval"
+    if [ $retval = 7 ]; then
+        return 7
+    fi
+    cyrus_ms_check_state master
+    if [ $? = 0 ]; then
+        return $OCF_RUNNING_MASTER
+    fi
+
+    cyrus_ms_check_state slave
+    if [ $? = 0 ]; then
+    return $OCF_SUCCESS
+    fi
+
+    return 7
+}
+
+cyrus_ms_validate() {
+    exit $OCF_SUCCESS
+}
+
+: ${OCF_RESKEY_state=${HA_RSCTMP}/Stateful-${OCF_RESOURCE_INSTANCE}.state}
+
+case $__OCF_ACTION in
+meta-data)  meta_data;;
+start)      cyrus_ms_start;;
+promote)    cyrus_ms_promote;;
+demote)     cyrus_ms_demote;;
+stop)       cyrus_ms_stop;;
+monitor)    cyrus_ms_monitor;;
+validate-all)   cyrus_ms_validate;;
+usage|help) cyrus_ms_usage $OCF_SUCCESS;;
+*)      cyrus_ms_usage $OCF_ERR_UNIMPLEMENTED;;
+esac
+
+exit $?
